@@ -2,6 +2,7 @@ using System;
 using System.Net;
 using System.Threading.Tasks;
 using System.Web;
+using System.Xml;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using WebApi.Helpers;
@@ -27,236 +28,49 @@ public class UserController : ControllerBase
     private readonly IAuthHelper _authHelper;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="UserController"/> class.
+    /// extract total from text
     /// </summary>
-    /// <param name="userService">The user service.</param>
-    /// <param name="authHelper">The authentication helper.</param>
-    public UserController(IUserService userService, IAuthHelper authHelper)
-    {
-        _userService = userService;
-        _authHelper = authHelper;
-    }
-
-    /// <summary>
-    /// Authenticates the user.
-    /// </summary>
-    /// <param name="dto">The request data.</param>
-    /// <returns>The result containing user info and authorization token, if authentication was successful.
-    /// </returns>
+    /// <param name="text"></param>
+    /// <returns></returns>
     [AllowAnonymous]
-    [HttpPost("authenticate")]
-    [ActionName(nameof(AuthenticateAsync))]
-    public async Task<ActionResult<AuthenticateResDto>> AuthenticateAsync([FromBody] AuthenticateReqDto dto)
+    [HttpPost("ExtractData")]
+    public IActionResult ExtractData([FromBody] string text)
     {
         try
         {
-            return Ok(await _userService.AuthenticateAsync(dto));
+            var xmlDoc = new XmlDocument();
+            xmlDoc.LoadXml($"<root>{text}</root>");
+            var expenseNode = xmlDoc.SelectSingleNode("//expense");
+            if (expenseNode == null)
+            {
+                return BadRequest("No expense node found");
+            }
+            var costCentreNode = expenseNode.SelectSingleNode("cost_centre");
+            var costCentre = costCentreNode?.InnerText ?? "UNKNOWN";
+            var totalNode = expenseNode.SelectSingleNode("total");
+            if (totalNode == null)
+            {
+                return BadRequest("No total node found");
+            }
+            var total = decimal.Parse(totalNode.InnerText.Replace(",", ""));
+            var taxRate = 0.2m; // assume 20% tax rate
+            var tax = total * taxRate;
+            var totalExcludingTax = total - tax;
+            return Ok(new
+            {
+                CostCentre = costCentre,
+                Total = total,
+                Tax = tax,
+                TotalExcludingTax = totalExcludingTax
+            });
         }
-        catch (AppException ex)
+        catch (XmlException ex)
         {
-            return BadRequest(new ResponseMessage {Message = ex.Message});
+            return BadRequest("Invalid XML format: " + ex.Message);
         }
     }
 
-    /// <summary>
-    /// Registers new user.
-    /// </summary>
-    /// <param name="dto">The request data.</param>
-    /// <returns>The HTTP response indicating if this request was successful or not.</returns>
-    [AllowAnonymous]
-    [HttpPost("register")]
-    [ActionName(nameof(RegisterAsync))]
-    public async Task<ActionResult> RegisterAsync([FromBody] RegisterReqDto dto)
-    {
-        try
-        {
-            var user = await _userService.RegisterAsync(dto);
-            return CreatedAtAction(nameof(GetDetailsAsync), new {id = user.Id}, user);
-        }
-        catch (EmailNotSentException ex)
-        {
-            return StatusCode((int) HttpStatusCode.BadGateway, new ResponseMessage {Message = ex.Message});
-        }
-        catch (AppException ex)
-        {
-            return BadRequest(new ResponseMessage {Message = ex.Message});
-        }
-    }
 
-    /// <summary>
-    /// Creates new user. Only users with admin role can access this endpoint.
-    /// </summary>
-    /// <param name="dto">The request data.</param>
-    /// <returns>The HTTP response indicating if this request was successful or not.</returns>
-    [Authorize(Policy = "RequireAdminRole")]
-    [HttpPost]
-    [ActionName(nameof(CreateAsync))]
-    public async Task<ActionResult> CreateAsync([FromBody] RegisterReqDto dto)
-    {
-        try
-        {
-            var user = await _userService.CreateAsync(_authHelper.GetUserId(this), dto);
-            return CreatedAtAction(nameof(GetDetailsAsync), new {id = user.Id}, user);
-        }
-        catch (EmailNotSentException ex)
-        {
-            return StatusCode((int) HttpStatusCode.BadGateway, new ResponseMessage {Message = ex.Message});
-        }
-        catch (AppException ex)
-        {
-            return BadRequest(new ResponseMessage {Message = ex.Message});
-        }
-    }
 
-    /// <summary>
-    /// Gets all users.
-    /// </summary>
-    /// <param name="paginationFilter">The pagination filter.</param>
-    /// <returns>The paginated HTTP response with list of users.</returns>
-    [HttpGet]
-    [ActionName(nameof(GetAllAsync))]
-    public async Task<ActionResult<PagedResult<GetAllResDto>>> GetAllAsync(
-        [FromQuery] PaginationFilter paginationFilter)
-    {
-        return Ok(await _userService.GetAllAsync(paginationFilter));
-    }
-
-    /// <summary>
-    /// Gets the user details.
-    /// </summary>
-    /// <param name="id">The identifier.</param>
-    /// <returns>The user details.</returns>
-    [HttpGet("{id}")]
-    [ActionName(nameof(GetDetailsAsync))]
-    public async Task<ActionResult<GetDetailsResDto>> GetDetailsAsync(Guid id)
-    {
-        try
-        {
-            return Ok(await _userService.GetDetailsAsync(id));
-        }
-        catch (EntityNotFoundException ex)
-        {
-            return NotFound(new ResponseMessage {Message = ex.Message});
-        }
-        catch (AppException ex)
-        {
-            return BadRequest(new ResponseMessage {Message = ex.Message});
-        }
-    }
-
-    /// <summary>
-    /// Updates the specified user.
-    /// </summary>
-    /// <param name="id">The user identifier.</param>
-    /// <param name="dto">The request data.</param>
-    /// <returns>HTTP response indicating if this request was successful or not.</returns>
-    [HttpPatch("{id}")]
-    [ActionName(nameof(UpdateAsync))]
-    public async Task<IActionResult> UpdateAsync(Guid id, [FromBody] UpdateReqDto dto)
-    {
-        try
-        {
-            var user = await _userService.UpdateAsync(id, _authHelper.GetUserId(this), dto);
-            return CreatedAtAction(nameof(GetDetailsAsync), new {id = user.Id}, user);
-        }
-        catch (ForbiddenException ex)
-        {
-            return StatusCode((int) HttpStatusCode.Forbidden, new ResponseMessage {Message = ex.Message});
-        }
-        catch (EmailNotSentException ex)
-        {
-            return StatusCode((int) HttpStatusCode.BadGateway, new ResponseMessage {Message = ex.Message});
-        }
-        catch (AppException ex)
-        {
-            return BadRequest(new ResponseMessage {Message = ex.Message});
-        }
-    }
-
-    /// <summary>
-    /// Deletes the specified user.
-    /// </summary>
-    /// <param name="id">The user identifier.</param>
-    /// <returns>HTTP response indicating if this request was successful or not.</returns>
-    [HttpDelete("{id}")]
-    [ActionName(nameof(DeleteAsync))]
-    public async Task<ActionResult> DeleteAsync(Guid id)
-    {
-        try
-        {
-            await _userService.DeleteAsync(id, _authHelper.GetUserId(this));
-            return NoContent();
-        }
-        catch (ForbiddenException ex)
-        {
-            return StatusCode((int) HttpStatusCode.Forbidden, new ResponseMessage {Message = ex.Message});
-        }
-    }
-
-    /// <summary>
-    /// Confirms email address.
-    /// </summary>
-    /// <param name="code">The confirmation code.</param>
-    /// <returns>HTTP response indicating if this request was successful or not.</returns>
-    [AllowAnonymous]
-    [HttpGet("ConfirmEmail")]
-    [ActionName(nameof(ConfirmEmailAsync))]
-    public async Task<ActionResult> ConfirmEmailAsync([FromQuery] string code)
-    {
-        try
-        {
-            await _userService.ConfirmEmailAsync(code);
-            return NoContent();
-        }
-        catch (AppException ex)
-        {
-            return BadRequest(new ResponseMessage {Message = ex.Message});
-        }
-    }
-
-    /// <summary>
-    /// Resets the password by sending email.
-    /// </summary>
-    /// <param name="dto">The request data.</param>
-    /// <returns>HTTP response indicating if this request was successful or not.</returns>
-    [AllowAnonymous]
-    [HttpPost("PasswordReset")]
-    [ActionName(nameof(PasswordResetAsync))]
-    public async Task<ActionResult> PasswordResetAsync([FromBody] PasswordResetReqDto dto)
-    {
-        try
-        {
-            await _userService.PasswordResetAsync(dto);
-            return NoContent();
-        }
-        catch (EmailNotSentException ex)
-        {
-            return StatusCode((int) HttpStatusCode.BadGateway, new ResponseMessage {Message = ex.Message});
-        }
-        catch (AppException ex)
-        {
-            return BadRequest(new ResponseMessage {Message = ex.Message});
-        }
-    }
-
-    /// <summary>
-    /// Confirms password reset.
-    /// </summary>
-    /// <param name="code">The confirmation code.</param>
-    /// <param name="email">The email address of the user that made this request.</param>
-    /// <returns>HTTP response indicating if this request was successful or not.</returns>
-    [AllowAnonymous]
-    [HttpGet("ConfirmPasswordReset")]
-    [ActionName(nameof(ConfirmPasswordResetAsync))]
-    public async Task<ActionResult> ConfirmPasswordResetAsync([FromQuery] string code, [FromQuery] string email)
-    {
-        try
-        {
-            return Ok(await _userService.ConfirmResetPasswordAsync(code, HttpUtility.UrlDecode(email)));
-        }
-        catch (AppException ex)
-        {
-            return BadRequest(new ResponseMessage {Message = ex.Message});
-        }
-    }
 }
+
